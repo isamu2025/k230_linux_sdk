@@ -1,0 +1,131 @@
+name: Build 01Studio K230 Debian Desktop Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Target Board'
+        required: true
+        default: 'canmv'
+        type: choice
+        options:
+          - canmv
+          - cybercam
+      os_ver:
+        description: 'Debian Version'
+        required: true
+        default: 'debian13'
+        type: choice
+        options:
+          - debian13
+          - debian12
+      rootfs_type:
+        description: 'System Type'
+        required: true
+        default: 'desktop'
+        type: choice
+        options:
+          - desktop
+          - server
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Disk Space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+          echo "=== Disk space after cleanup ==="
+          df -h
+
+      - name: Checkout walnutpi-build
+        uses: actions/checkout@v4
+        with:
+          repository: walnutpi/walnutpi-build
+          ref: main
+          fetch-depth: 1
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y whiptail bc pigz debootstrap qemu-user-static binfmt-support \
+            kpartx parted dosfstools u-boot-tools device-tree-compiler \
+            gcc-arm-none-eabi cmake debian-archive-keyring curl git bison flex swig \
+            libssl-dev python3 python3-dev
+
+      - name: Run Build Script
+        run: |
+          echo "Starting build for Board: ${{ inputs.board }}, OS: ${{ inputs.os_ver }}, Type: ${{ inputs.rootfs_type }}"
+          sudo ./build.sh -b ${{ inputs.board }} -v ${{ inputs.os_ver }} -t ${{ inputs.rootfs_type }}
+
+      - name: Compress Image and Generate Checksums
+        id: pack
+        run: |
+          echo "=== Listing Output Images ==="
+          ls -lh output/ || true
+          ls -lh output/${{ inputs.board }}/ || true
+          
+          IMG_FILE=$(find output/${{ inputs.board }}/ -maxdepth 2 -name "*.img" | head -n 1)
+          if [ -z "$IMG_FILE" ]; then
+            echo "Error: No .img file found in output/${{ inputs.board }}/"
+            exit 1
+          fi
+          
+          echo "Found image: $IMG_FILE"
+          DIRNAME=$(dirname "$IMG_FILE")
+          BASENAME=$(basename "$IMG_FILE")
+          
+          cd "$DIRNAME"
+          echo "Compressing with pigz..."
+          pigz -k -9 "$BASENAME"
+          
+          GZ_NAME="${BASENAME}.gz"
+          echo "Generating checksums for $GZ_NAME..."
+          md5sum "$GZ_NAME" > "${GZ_NAME}.md5"
+          sha256sum "$GZ_NAME" > "${GZ_NAME}.sha256"
+          
+          echo "RELEASE_PATH=$DIRNAME" >> $GITHUB_ENV
+          echo "GZ_NAME=$GZ_NAME" >> $GITHUB_ENV
+          echo "TAG_NAME=k230-${{ inputs.board }}-${{ inputs.os_ver }}-${{ inputs.rootfs_type }}-$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.GZ_NAME }}
+          path: |
+            ${{ env.RELEASE_PATH }}/*.img.gz
+            ${{ env.RELEASE_PATH }}/*.md5
+            ${{ env.RELEASE_PATH }}/*.sha256
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "01Studio K230 (${{ inputs.board }}) ${{ inputs.os_ver }} Desktop Release"
+          body: |
+            ## 01Studio K230 Linux-Debian 13 图形桌面版固件发布
+            - **板型 (Board)**: ${{ inputs.board }} (01Studio CanMV-K230)
+            - **系统形态**: ${{ inputs.rootfs_type }} (XFCE4 图形桌面版)
+            - **Debian 版本**: ${{ inputs.os_ver }} (Trixie riscv64)
+            - **Linux 内核**: 平头哥玄铁优化版 Linux 6.6 LTS
+            - **特色功能**:
+              - 预装 XFCE4 经典轻量级桌面环境 + LightDM 登录器
+              - 预装文泉驿正黑中文字体 (`fonts-wqy-zenhei`)
+              - 预装 NetworkManager 图形化 WiFi 管理器（可直接点选连接 WiFi）
+              - 预装 X11VNC 远程桌面支持（电脑可通过 VNC 远程直连板端桌面）
+            - **构建时间**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          files: |
+            ${{ env.RELEASE_PATH }}/*.img.gz
+            ${{ env.RELEASE_PATH }}/*.md5
+            ${{ env.RELEASE_PATH }}/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
