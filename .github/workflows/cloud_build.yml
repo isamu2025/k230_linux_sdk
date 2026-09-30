@@ -1,0 +1,125 @@
+name: Cloud Build K230 Linux SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Target Board Defconfig'
+        required: true
+        default: 'k230_canmv_defconfig'
+        type: choice
+        options:
+          - 'k230_canmv_defconfig'
+          - 'k230d_canmv_defconfig'
+          - 'k230_canmv_01studio_defconfig'
+          - 'k230_canmv_01studio_emmc_defconfig'
+          - 'k230_canmv_dongshanpi_defconfig'
+          - 'k230_canmv_lckfb_defconfig'
+          - 'BPI-CanMV-K230D-Zero_defconfig'
+          - 'k230_evb_defconfig'
+      image_type:
+        description: 'Rootfs / Image Type'
+        required: true
+        default: 'buildroot'
+        type: choice
+        options:
+          - 'buildroot'
+          - 'debian'
+          - 'ubuntu'
+      upload_release:
+        description: 'Publish Image to GitHub Release'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build K230 Image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free Disk Space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/local/share/chromium
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+          echo "=== Disk space after cleanup ==="
+          df -h
+
+      - name: Checkout SDK Code
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 1
+
+      - name: Install Toolchain and Dependencies
+        run: |
+          sudo make toolchain_and_depend
+
+      - name: Compile K230 Linux Image
+        run: |
+          echo "Configuring board: ${{ inputs.board }}"
+          make CONF=${{ inputs.board }}
+
+          echo "Compiling image type: ${{ inputs.image_type }}"
+          if [ "${{ inputs.image_type }}" = "buildroot" ]; then
+            make source
+            make -j$(nproc)
+          elif [ "${{ inputs.image_type }}" = "debian" ]; then
+            sudo make debian
+          elif [ "${{ inputs.image_type }}" = "ubuntu" ]; then
+            sudo make ubuntu
+          fi
+
+      - name: Prepare Artifacts
+        id: prepare_artifacts
+        run: |
+          mkdir -p ./release_files
+          echo "Looking for built images in output/${{ inputs.board }}/images/..."
+          ls -la output/${{ inputs.board }}/images/ || true
+
+          # Copy compressed SD card images
+          find output/${{ inputs.board }}/images/ -maxdepth 2 -name "*.img.gz" -exec cp -v {} ./release_files/ \;
+
+          # Copy deb packages if any exist
+          find output/${{ inputs.board }}/ -name "*.deb" -exec cp -v {} ./release_files/ \; || true
+
+          echo "=== Artifacts to upload ==="
+          ls -lh ./release_files/
+          echo "count=$(ls -1 ./release_files | wc -l)" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Upload Artifact
+        if: steps.prepare_artifacts.outputs.count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: k230-${{ inputs.board }}-${{ inputs.image_type }}-${{ steps.prepare_artifacts.outputs.date }}
+          path: ./release_files/*
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: ${{ inputs.upload_release && steps.prepare_artifacts.outputs.count != '0' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ inputs.board }}-${{ steps.prepare_artifacts.outputs.date }}
+          name: K230 Image - ${{ inputs.board }} (${{ inputs.image_type }})
+          body: |
+            ## K230 Linux SDK Built Image
+            - **Target Board**: `${{ inputs.board }}`
+            - **Image Type**: `${{ inputs.image_type }}`
+            - **Build Date**: `${{ steps.prepare_artifacts.outputs.date }}`
+            - **Commit**: `${{ github.sha }}`
+          files: ./release_files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
