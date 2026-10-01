@@ -325,6 +325,10 @@ sed -i 's/overlays=spidev0_0 spidev0_1 csi2/overlays="spidev0_0 spidev0_1 csi2"/
 sed -i 's/TOOLCHAIN_FILE_NAME=\$(basename "\$TOOLCHAIN_DOWN_URL")/TOOLCHAIN_TAR=\$(basename "\$TOOLCHAIN_DOWN_URL")/g' scripts/boot/build.sh scripts/kernel/build.sh || true
 sed -i 's/\${PATH_TOOLCHAIN}\/\${TOOLCHAIN_FILE_NAME} -C/\${PATH_TOOLCHAIN}\/\${TOOLCHAIN_TAR} -C/g' scripts/boot/build.sh scripts/kernel/build.sh || true
 
+# 修复 rootfs debootstrap second-stage 时 qemu-riscv64-static 缺失导致的 Exec format error
+sed -i 's|LC_ALL=C LANGUAGE=C LANG=C chroot \${tmp_dir} /debootstrap/debootstrap --second-stage|mkdir -p ${tmp_dir}/usr/bin && cp -fv /usr/bin/qemu-riscv64-static ${tmp_dir}/usr/bin/ 2>/dev/null || true; LC_ALL=C LANGUAGE=C LANG=C chroot ${tmp_dir} /debootstrap/debootstrap --second-stage|g' scripts/rootfs/__gen.sh || true
+sed -i '/debootstrap --foreign/a \    mkdir -p ${tmp_dir}/usr/bin && cp -fv /usr/bin/qemu-riscv64-static ${tmp_dir}/usr/bin/ 2>/dev/null || true' scripts/rootfs/__gen.sh || true
+
 # ------------------------------------------------------------------------------
 # 3. 换芯环节 1：替换 defconfig 为 01Studio 官方 1.4 内核配置
 # ------------------------------------------------------------------------------
