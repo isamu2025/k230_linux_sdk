@@ -1,0 +1,219 @@
+name: Build 01Studio K230 Debian Desktop Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Target Board'
+        required: true
+        default: 'canmv'
+        type: choice
+        options:
+          - canmv
+          - cybercam
+      os_ver:
+        description: 'Debian Version'
+        required: true
+        default: 'debian13'
+        type: choice
+        options:
+          - debian13
+          - debian12
+      rootfs_type:
+        description: 'System Type'
+        required: true
+        default: 'desktop'
+        type: choice
+        options:
+          - desktop
+          - server
+      assets_url:
+        description: 'Custom Fallback URL for 01studio_1.4_assets.tar.gz (Optional)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Maximize Build Disk Space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          sudo apt-get clean
+          echo "=== Disk space after cleanup ==="
+          df -h
+
+      - name: Checkout walnutpi-build
+        uses: actions/checkout@v4
+        with:
+          repository: walnutpi/walnutpi-build
+          ref: main
+          fetch-depth: 1
+
+      - name: Checkout 01Studio Assets Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          path: assets_source
+          clean: false
+        continue-on-error: true
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y whiptail bc pigz debootstrap qemu-user-static binfmt-support \
+            kpartx parted dosfstools u-boot-tools device-tree-compiler \
+            gcc-arm-none-eabi cmake debian-archive-keyring curl git bison flex swig \
+            libssl-dev python3 python3-dev libncurses5-dev libncurses-dev rsync cpio
+          sudo systemctl restart systemd-binfmt || sudo update-binfmts --enable || true
+
+      - name: Prepare 01Studio 1.4 Assets and Patch Script
+        run: |
+          set -e
+          echo "=== Preparing 01Studio 1.4 Verified Assets ==="
+          
+          # 1. 查找并同步 patch_01studio.sh 脚本
+          if [ -f "assets_source/patch_01studio.sh" ]; then
+            cp -fv assets_source/patch_01studio.sh ./
+          fi
+          
+          # 2. 解压或复制 01studio_1.4_assets
+          if [ -f "assets_source/01studio_1.4_assets.tar.gz" ]; then
+            echo "Extracting 01studio_1.4_assets.tar.gz from assets_source..."
+            tar -zxvf assets_source/01studio_1.4_assets.tar.gz
+          elif [ -f "01studio_1.4_assets.tar.gz" ]; then
+            echo "Extracting 01studio_1.4_assets.tar.gz from root workspace..."
+            tar -zxvf 01studio_1.4_assets.tar.gz
+          elif [ -d "assets_source/01studio_1.4_assets" ]; then
+            echo "Copying 01studio_1.4_assets from assets_source directory..."
+            cp -rf assets_source/01studio_1.4_assets ./
+            cp -f assets_source/kernel_01studio_1.4.config ./ || true
+          elif [ -n "${{ inputs.assets_url }}" ]; then
+            echo "Downloading 01studio_1.4_assets.tar.gz from custom URL: ${{ inputs.assets_url }}..."
+            curl -fsSL -o 01studio_1.4_assets.tar.gz "${{ inputs.assets_url }}"
+            tar -zxvf 01studio_1.4_assets.tar.gz
+          fi
+
+          # 3. 校验关键资产完备性
+          echo "=== Verifying 01Studio Asset Integrity ==="
+          ls -lh 01studio_1.4_assets/ || (echo "Error: 01studio_1.4_assets missing!" && exit 1)
+          test -f "kernel_01studio_1.4.config" || (echo "Error: kernel_01studio_1.4.config missing!" && exit 1)
+          test -f "01studio_1.4_assets/fw_jump_add_uboot_head.bin" || (echo "Error: fw_jump_add_uboot_head.bin missing!" && exit 1)
+          test -f "01studio_1.4_assets/k230-canmv-01studio-lcd.dtb" || (echo "Error: k230-canmv-01studio-lcd.dtb missing!" && exit 1)
+          test -f "01studio_1.4_assets/isp_media_server" || (echo "Error: isp_media_server missing!" && exit 1)
+          test -f "01studio_1.4_assets/modules_updates/8189fs.ko" || (echo "Error: 8189fs.ko missing!" && exit 1)
+          echo "All critical 01Studio 1.4 assets verified successfully."
+
+      - name: Apply 01Studio 1.4 Injection Patches
+        run: |
+          set -e
+          echo "=== Applying 01Studio 1.4 Injection to Build Pipeline ==="
+          chmod +x patch_01studio.sh
+          sudo bash ./patch_01studio.sh "$GITHUB_WORKSPACE" "${{ inputs.board }}" "${{ inputs.os_ver }}" "${{ inputs.rootfs_type }}"
+
+      - name: Build Firmware Components
+        run: |
+          set -e
+          echo "Starting robust step-by-step build for Board: ${{ inputs.board }}, OS: ${{ inputs.os_ver }}, Type: ${{ inputs.rootfs_type }}"
+
+          echo "=== [1/4] Building Bootloader (U-Boot) ==="
+          sudo bash ./scripts/boot/build.sh ${{ inputs.board }}
+
+          echo "=== [2/4] Building Linux Kernel (01Studio 1.4 Config) ==="
+          sudo bash ./scripts/kernel/build.sh ${{ inputs.board }}
+
+          echo "=== [3/4] Building Rootfs (Debian Desktop) ==="
+          sudo bash ./scripts/rootfs/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }}
+
+          echo "=== [4/4] Assembling Final SD Card Image with 01Studio U-Boot Header ==="
+          sudo bash ./scripts/image/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }}
+
+      - name: Compress Image and Generate Checksums
+        id: pack
+        run: |
+          sudo chown -R $USER:$USER output/
+          echo "=== Listing Output Images ==="
+          ls -lh output/ || true
+          ls -lh output/${{ inputs.board }}/ || true
+          
+          IMG_FILE=$(find output/ -maxdepth 3 -type f -name "*.img" | head -n 1)
+          if [ -z "$IMG_FILE" ]; then
+            echo "Error: No .img file found in output/"
+            exit 1
+          fi
+          
+          echo "Found image: $IMG_FILE"
+          DIRNAME=$(dirname "$IMG_FILE")
+          BASENAME=$(basename "$IMG_FILE")
+          
+          cd "$DIRNAME"
+          echo "Compressing with pigz..."
+          pigz -k -9 "$BASENAME"
+          
+          GZ_NAME="${BASENAME}.gz"
+          echo "Generating checksums for $GZ_NAME..."
+          md5sum "$GZ_NAME" > "${GZ_NAME}.md5"
+          sha256sum "$GZ_NAME" > "${GZ_NAME}.sha256"
+          
+          echo "RELEASE_PATH=$DIRNAME" >> $GITHUB_ENV
+          echo "GZ_NAME=$GZ_NAME" >> $GITHUB_ENV
+          echo "TAG_NAME=k230-${{ inputs.board }}-${{ inputs.os_ver }}-${{ inputs.rootfs_type }}-$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.GZ_NAME }}
+          path: |
+            ${{ env.RELEASE_PATH }}/*.img.gz
+            ${{ env.RELEASE_PATH }}/*.md5
+            ${{ env.RELEASE_PATH }}/*.sha256
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "01Studio K230 (${{ inputs.board }}) ${{ inputs.os_ver }} Desktop Release (01Studio 1.4 Core)"
+          body: |
+            ## 01Studio K230 Linux-Debian 13 (Trixie) 官方换芯桌面版固件
+            本固件基于 01Studio 官方 Debian 1.4 提取资产深度重构，结合平头哥玄铁 C908 专属优化工具链与 Linux 6.6 LTS 内核。
+
+            ### 🚀 核心架构与“换芯”特性
+            - **全量 01Studio 1.4 内核配置 (defconfig)**:
+              - 完美集成 DRM KMS、ST7701S MIPI 屏幕驱动、敦泰 FT5306 触控驱动
+              - 完整启用平头哥玄铁 C908 D-Cache 内存屏障与流水线刷新，彻底杜绝黑屏与丢帧
+            - **专属 U-Boot 引导头与设备树**:
+              - SD 卡 Sector 1024 (512KB) 偏移固化写入 01Studio 官方 `fw_jump_add_uboot_head.bin`
+              - Boot 分区同步写入 `k230-canmv-01studio-lcd.dtb` (3.5寸 MIPI 屏) 与 `k230-canmv-01studio.dtb` (HDMI 屏)
+              - 预置 01Studio 官方定制 `logo.yuv` 开机画面
+            - **开机即用网络与远程管理**:
+              - **WiFi 自动连接**: 开机即自动连接 `mxjtea2020_2.4G` (密码: `mxjtea2020`)
+              - **SSH 远程登录**: 默认启用 root 密码登录 (默认密码: `root`)
+              - **自动扩容**: 预置 `mount_boot.service`，首次开机自动扩展根分区至 SD 卡全部容量
+            - **多媒体与 ISP 图像调优**:
+              - 预置 `vvcam.service` 与 `/usr/bin/isp_media_server`，开机自启 GC2093/OV5647 硬件 ISP 驱动服务
+              - 匹配注入 `8189fs.ko`, `8733bs.ko`, `vvcam_*.ko`, `nonai2d.ko` 内核模块
+            - **XFCE4 轻量级图形桌面**:
+              - 预装 XFCE4 桌面环境、Xorg、LightDM (root 自动登录)
+              - 预装文泉驿正黑中文字体 (`fonts-wqy-zenhei`)
+              - 预置 `/etc/X11/xorg.conf.d/20-modesetting.conf` 强制绑定 `/dev/dri/card0`
+              - 预装并启用 `x11vnc` (端口 5900) 与 `xrdp` (端口 3389) 远程桌面服务
+
+            ### 📦 固件校验信息
+            请解压后通过 Rufus 或 BalenaEtcher 烧录至 TF 卡 (建议 >= 16GB Class 10 U3)。
+          files: |
+            ${{ env.RELEASE_PATH }}/*.img.gz
+            ${{ env.RELEASE_PATH }}/*.md5
+            ${{ env.RELEASE_PATH }}/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
