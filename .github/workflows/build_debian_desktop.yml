@@ -62,8 +62,25 @@ jobs:
 
       - name: Run Build Script
         run: |
-          echo "Starting build for Board: ${{ inputs.board }}, OS: ${{ inputs.os_ver }}, Type: ${{ inputs.rootfs_type }}"
-          sudo ./build.sh -b ${{ inputs.board }} -v ${{ inputs.os_ver }} -t ${{ inputs.rootfs_type }}
+          set -e
+          echo "Starting robust step-by-step build for Board: ${{ inputs.board }}, OS: ${{ inputs.os_ver }}, Type: ${{ inputs.rootfs_type }}"
+
+          # 1. 修复 upstream walnutpi-build 已知的脚本变量污染与语法缺陷
+          sed -i 's/readonly IMAGE_FLAG_NO_SCREEN_DISPLAY/IMAGE_FLAG_NO_SCREEN_DISPLAY/g' scripts/image/build.sh || true
+          sed -i 's/overlays=spidev0_0 spidev0_1 csi2/overlays="spidev0_0 spidev0_1 csi2"/g' board/canmv/config.txt || true
+
+          # 2. 独立进程串行构建，彻底规避 source 导致的局部/全局变量冲突
+          echo "=== [1/4] Building Bootloader (U-Boot) ==="
+          sudo bash ./scripts/boot/build.sh ${{ inputs.board }}
+
+          echo "=== [2/4] Building Linux Kernel ==="
+          sudo bash ./scripts/kernel/build.sh ${{ inputs.board }}
+
+          echo "=== [3/4] Building Rootfs (Debian Desktop) ==="
+          sudo bash ./scripts/rootfs/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }}
+
+          echo "=== [4/4] Assembling Final SD Card Image ==="
+          sudo bash ./scripts/image/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }} no_choose
 
       - name: Compress Image and Generate Checksums
         id: pack
