@@ -31,6 +31,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Maximize Build Disk Space
         run: |
@@ -71,6 +73,8 @@ jobs:
 
           # 2. 修复 upstream walnutpi-build 已知的脚本变量污染与语法缺陷
           sed -i 's/readonly IMAGE_FLAG_NO_SCREEN_DISPLAY/IMAGE_FLAG_NO_SCREEN_DISPLAY/g' scripts/image/build.sh || true
+          sed -i 's/readonly PART1_SIZE/PART1_SIZE/g' scripts/image/build.sh || true
+          sed -i 's/\[ -n "\$ENTER_img_file" \]/\[ -f "\$ENTER_img_file" \]/g' scripts/image/__make_prepare.sh || true
           sed -i 's/overlays=spidev0_0 spidev0_1 csi2/overlays="spidev0_0 spidev0_1 csi2"/g' board/canmv/config.txt || true
 
           # 3. 独立进程串行构建，彻底规避 source 导致的局部/全局变量冲突
@@ -84,7 +88,7 @@ jobs:
           sudo bash ./scripts/rootfs/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }}
 
           echo "=== [4/4] Assembling Final SD Card Image ==="
-          sudo bash ./scripts/image/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }} no_choose
+          sudo bash ./scripts/image/build.sh ${{ inputs.board }} ${{ inputs.os_ver }} ${{ inputs.rootfs_type }}
 
       - name: Compress Image and Generate Checksums
         id: pack
@@ -93,9 +97,9 @@ jobs:
           ls -lh output/ || true
           ls -lh output/${{ inputs.board }}/ || true
           
-          IMG_FILE=$(find output/${{ inputs.board }}/ -maxdepth 2 -name "*.img" | head -n 1)
+          IMG_FILE=$(find output/ -maxdepth 3 -type f -name "*.img" | head -n 1)
           if [ -z "$IMG_FILE" ]; then
-            echo "Error: No .img file found in output/${{ inputs.board }}/"
+            echo "Error: No .img file found in output/"
             exit 1
           fi
           
