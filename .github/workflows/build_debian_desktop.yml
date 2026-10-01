@@ -75,6 +75,7 @@ jobs:
           sed -i 's/readonly IMAGE_FLAG_NO_SCREEN_DISPLAY/IMAGE_FLAG_NO_SCREEN_DISPLAY/g' scripts/image/build.sh || true
           sed -i 's/readonly PART1_SIZE/PART1_SIZE/g' scripts/image/build.sh || true
           sed -i 's/\[ -n "\$ENTER_img_file" \]/\[ -f "\$ENTER_img_file" \]/g' scripts/image/__make_prepare.sh || true
+          sed -i 's/local VERSION_APT=.*/local VERSION_APT="1.0.0"/g' scripts/image/__make_image.sh || true
           sed -i 's/overlays=spidev0_0 spidev0_1 csi2/overlays="spidev0_0 spidev0_1 csi2"/g' board/canmv/config.txt || true
 
           # 3. 独立进程串行构建，彻底规避 source 导致的局部/全局变量冲突
