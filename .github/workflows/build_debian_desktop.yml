@@ -94,6 +94,7 @@ jobs:
       - name: Compress Image and Generate Checksums
         id: pack
         run: |
+          sudo chown -R $USER:$USER output/
           echo "=== Listing Output Images ==="
           ls -lh output/ || true
           ls -lh output/${{ inputs.board }}/ || true
