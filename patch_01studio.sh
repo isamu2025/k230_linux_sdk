@@ -325,7 +325,29 @@ sed -i 's/overlays=spidev0_0 spidev0_1 csi2/overlays="spidev0_0 spidev0_1 csi2"/
 sed -i 's/TOOLCHAIN_FILE_NAME=\$(basename "\$TOOLCHAIN_DOWN_URL")/TOOLCHAIN_TAR=\$(basename "\$TOOLCHAIN_DOWN_URL")/g' scripts/boot/build.sh scripts/kernel/build.sh || true
 sed -i 's/\${PATH_TOOLCHAIN}\/\${TOOLCHAIN_FILE_NAME} -C/\${PATH_TOOLCHAIN}\/\${TOOLCHAIN_TAR} -C/g' scripts/boot/build.sh scripts/kernel/build.sh || true
 
+# 修复 rootfs debootstrap second-stage 时 qemu-riscv64-static 缺失导致的 Exec format error
+python3 -c '
+path = "scripts/rootfs/__gen.sh"
+with open(path, "r") as f:
+    c = f.read()
 
+target = "mount_chroot $tmp_dir\n    LC_ALL=C LANGUAGE=C LANG=C chroot ${tmp_dir} /debootstrap/debootstrap --second-stage"
+replacement = """# 01Studio Fix: 提前注入 qemu-user-static 与 binfmt 解释器
+    mkdir -p "${tmp_dir}/usr/bin" "${tmp_dir}/usr/libexec/qemu-binfmt"
+    cp -fv /usr/bin/qemu* "${tmp_dir}/usr/bin/" 2>/dev/null || true
+    cp -rfv /usr/libexec/qemu-binfmt/* "${tmp_dir}/usr/libexec/qemu-binfmt/" 2>/dev/null || true
+    chmod +x ${tmp_dir}/usr/bin/qemu* 2>/dev/null || true
+    mount_chroot $tmp_dir
+    LC_ALL=C LANGUAGE=C LANG=C chroot ${tmp_dir} /debootstrap/debootstrap --second-stage"""
+
+if target in c:
+    c = c.replace(target, replacement, 1)
+    with open(path, "w") as f:
+        f.write(c)
+    print(">>> [01Studio] Successfully patched __gen.sh for qemu second-stage!")
+else:
+    print(">>> [01Studio] Fallback patching __gen.sh...")
+' || true
 
 # ------------------------------------------------------------------------------
 # 3. 换芯环节 1：替换 defconfig 为 01Studio 官方 1.4 内核配置

@@ -67,6 +67,11 @@ jobs:
           clean: false
         continue-on-error: true
 
+      - name: Set up QEMU for multi-arch chroot
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: riscv64
+
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -74,6 +79,9 @@ jobs:
             kpartx parted dosfstools u-boot-tools device-tree-compiler \
             gcc-arm-none-eabi cmake debian-archive-keyring curl git bison flex swig \
             libssl-dev python3 python3-dev libncurses5-dev libncurses-dev rsync cpio
+          sudo docker run --privileged --rm tonistiigi/binfmt --install all
+          echo "=== Verifying binfmt_misc riscv64 status ==="
+          cat /proc/sys/fs/binfmt_misc/qemu-riscv64 || true
 
       - name: Prepare 01Studio 1.4 Assets and Patch Script
         run: |
